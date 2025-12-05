@@ -2,8 +2,8 @@
 
 # ==========================
 # Nginx 一键管理脚本
-# Version: 1.8
-# 功能: 安装/单站/批量添加/删除/卸载/自动续期/防火墙放行/开机自启/输出网站信息
+# Version: 1.9
+# 功能: 安装/单站/批量添加/删除/卸载/自动续期/防火墙放行/开机自启/输出网站信息/80+443监听
 # 支持: Debian/Ubuntu, CentOS/RHEL/AlmaLinux/RockyLinux, Fedora
 # ==========================
 
@@ -109,7 +109,7 @@ show_site_info() {
     echo "域名: $domain"
     echo "网站根目录: $site_root"
     echo "Nginx 配置文件: $conf_file"
-    if [[ "$port" == "443" ]]; then
+    if [[ "$port" == "443" || "$port" == "80+443" ]]; then
         if [[ "$cert_choice" == 1 ]]; then
             echo "证书类型: 自签"
             echo "证书文件: $ssl_dir/$domain.crt"
@@ -136,20 +136,28 @@ add_site() {
     mkdir -p "$site_root"
     echo "<h1>欢迎访问 $domain</h1>" > "$site_root/index.html"
 
-    echo "请选择端口: "
+    echo "请选择监听端口: "
     echo "1) 80"
     echo "2) 443"
-    read -p "请输入选项 [1-2]: " port_choice
+    echo "3) 80+443"
+    read -p "请输入选项 [1-3]: " port_choice
+
     case "$port_choice" in
         1) port=80 ;;
         2) port=443 ;;
+        3) port="80+443" ;;
         *) echo "无效选项"; return ;;
     esac
 
     conf_file="$NGINX_CONF_DIR/$domain.conf"
-    cat > "$conf_file" <<EOL
+    SSL_DIR="/etc/ssl/$domain"
+    mkdir -p "$SSL_DIR"
+
+    # 生成 Nginx 配置
+    if [[ "$port" == "80" ]]; then
+        cat > "$conf_file" <<EOL
 server {
-    listen $port;
+    listen 80;
     server_name $domain;
 
     root $site_root;
@@ -161,39 +169,99 @@ server {
 }
 EOL
 
-    ln -s "$conf_file" "$NGINX_CONF_ENABLED/$domain.conf"
-
-    if [[ "$port" -eq 443 ]]; then
+    elif [[ "$port" == "443" ]]; then
         echo "请选择证书类型:"
         echo "1) 自签证书"
         echo "2) Let’s Encrypt 自动申请"
         read -p "请输入选项 [1-2]: " cert_choice
 
-        SSL_DIR="/etc/ssl/$domain"
-        mkdir -p "$SSL_DIR"
+        if [[ "$cert_choice" == 1 ]]; then
+            openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+                -keyout "$SSL_DIR/$domain.key" \
+                -out "$SSL_DIR/$domain.crt" \
+                -subj "/CN=$domain"
+            cat > "$conf_file" <<EOL
+server {
+    listen 443 ssl;
+    server_name $domain;
 
-        case "$cert_choice" in
-            1)
-                openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-                    -keyout "$SSL_DIR/$domain.key" \
-                    -out "$SSL_DIR/$domain.crt" \
-                    -subj "/CN=$domain"
-                sed -i "s|listen 443;|listen 443 ssl;|g" "$conf_file"
-                sed -i "/root/a \    ssl_certificate $SSL_DIR/$domain.crt;\n    ssl_certificate_key $SSL_DIR/$domain.key;" "$conf_file"
-                ;;
-            2)
-                certbot --nginx -d "$domain" --non-interactive --agree-tos -m admin@$domain
-                setup_cert_renewal
-                ;;
-        esac
+    root $site_root;
+    index index.html;
+
+    ssl_certificate $SSL_DIR/$domain.crt;
+    ssl_certificate_key $SSL_DIR/$domain.key;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+}
+EOL
+        else
+            certbot --nginx -d "$domain" --non-interactive --agree-tos -m admin@$domain
+            cert_choice=2
+        fi
+
+    elif [[ "$port" == "80+443" ]]; then
+        echo "请选择证书类型:"
+        echo "1) 自签证书"
+        echo "2) Let’s Encrypt 自动申请"
+        read -p "请输入选项 [1-2]: " cert_choice
+
+        # HTTP server 块
+        cat > "$conf_file" <<EOL
+server {
+    listen 80;
+    server_name $domain;
+
+    root $site_root;
+    index index.html;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+}
+EOL
+
+        # HTTPS server 块
+        if [[ "$cert_choice" == 1 ]]; then
+            openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+                -keyout "$SSL_DIR/$domain.key" \
+                -out "$SSL_DIR/$domain.crt" \
+                -subj "/CN=$domain"
+            cat >> "$conf_file" <<EOL
+server {
+    listen 443 ssl;
+    server_name $domain;
+
+    root $site_root;
+    index index.html;
+
+    ssl_certificate $SSL_DIR/$domain.crt;
+    ssl_certificate_key $SSL_DIR/$domain.key;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+}
+EOL
+        else
+            certbot --nginx -d "$domain" --non-interactive --agree-tos -m admin@$domain
+            cert_choice=2
+        fi
     fi
 
+    ln -s "$conf_file" "$NGINX_CONF_ENABLED/$domain.conf" 2>/dev/null || true
     nginx -t && systemctl reload nginx
     open_firewall_ports
     show_site_info "$domain" "$site_root" "$conf_file" "$port" "$cert_choice" "$SSL_DIR"
+
+    # 自动续期
+    if [[ "$port" == "443" || "$port" == "80+443" ]] && [[ "$cert_choice" == 2 ]]; then
+        setup_cert_renewal
+    fi
 }
 
-# 批量添加网站
+# 批量添加网站（同理，可在循环里加 80+443 支持）
 add_sites_batch() {
     echo "请输入多个域名，用空格分隔（例如: example.com test.com）:"
     read -a domains
@@ -202,17 +270,18 @@ add_sites_batch() {
         return
     fi
 
-    echo "请选择端口: "
+    echo "请选择监听端口: "
     echo "1) 80"
     echo "2) 443"
-    read -p "请输入选项 [1-2]: " port_choice
-    case "$port_choice" in
-        1) port=80 ;;
-        2) port=443 ;;
-        *) echo "无效选项"; return ;;
-    esac
+    echo "3) 80+443"
+    read -p "请输入选项 [1-3]: " port_choice
 
-    if [[ "$port" -eq 443 ]]; then
+    if [[ "$port_choice" == "1" ]]; then port=80
+    elif [[ "$port_choice" == "2" ]]; then port=443
+    elif [[ "$port_choice" == "3" ]]; then port="80+443"
+    else echo "无效选项"; return; fi
+
+    if [[ "$port" == "443" || "$port" == "80+443" ]]; then
         echo "请选择证书类型:"
         echo "1) 自签证书"
         echo "2) Let’s Encrypt 自动申请"
@@ -232,49 +301,12 @@ add_sites_batch() {
         echo "<h1>欢迎访问 $domain</h1>" > "$site_root/index.html"
 
         conf_file="$NGINX_CONF_DIR/$domain.conf"
-        cat > "$conf_file" <<EOL
-server {
-    listen $port;
-    server_name $domain;
+        SSL_DIR="/etc/ssl/$domain"
+        mkdir -p "$SSL_DIR"
 
-    root $site_root;
-    index index.html;
-
-    location / {
-        try_files \$uri \$uri/ =404;
-    }
-}
-EOL
-
-        ln -s "$conf_file" "$NGINX_CONF_ENABLED/$domain.conf"
-
-        if [[ "$port" -eq 443 ]]; then
-            SSL_DIR="/etc/ssl/$domain"
-            mkdir -p "$SSL_DIR"
-
-            case "$cert_choice" in
-                1)
-                    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-                        -keyout "$SSL_DIR/$domain.key" \
-                        -out "$SSL_DIR/$domain.crt" \
-                        -subj "/CN=$domain"
-                    sed -i "s|listen 443;|listen 443 ssl;|g" "$conf_file"
-                    sed -i "/root/a \    ssl_certificate $SSL_DIR/$domain.crt;\n    ssl_certificate_key $SSL_DIR/$domain.key;" "$conf_file"
-                    ;;
-                2)
-                    certbot --nginx -d "$domain" --non-interactive --agree-tos -m admin@$domain
-                    ;;
-            esac
-        fi
-
-        nginx -t && systemctl reload nginx
-        show_site_info "$domain" "$site_root" "$conf_file" "$port" "$cert_choice" "$SSL_DIR"
+        # 调用单站逻辑生成配置
+        add_site "$domain"
     done
-
-    open_firewall_ports
-    if [[ "$port" -eq 443 && "$cert_choice" -eq 2 ]]; then
-        setup_cert_renewal
-    fi
 }
 
 # 删除网站
@@ -330,7 +362,7 @@ uninstall_nginx() {
 }
 
 # 主菜单
-echo "====== Nginx 一键管理 ======"
+echo "====== Nginx 一键管理 v1.9 ======"
 echo "1) 安装 Nginx"
 echo "2) 添加单个网站"
 echo "3) 批量添加网站"
