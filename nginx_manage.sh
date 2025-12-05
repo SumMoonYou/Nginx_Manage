@@ -2,8 +2,8 @@
 
 # ==========================
 # Nginx 一键管理脚本
-# Version: 1.7
-# 功能: 安装/单站/批量添加/删除/卸载/自动续期/防火墙放行/开机自启
+# Version: 1.8
+# 功能: 安装/单站/批量添加/删除/卸载/自动续期/防火墙放行/开机自启/输出网站信息
 # 支持: Debian/Ubuntu, CentOS/RHEL/AlmaLinux/RockyLinux, Fedora
 # ==========================
 
@@ -95,6 +95,34 @@ setup_cert_renewal() {
     fi
 }
 
+# 输出网站信息函数
+show_site_info() {
+    local domain="$1"
+    local site_root="$2"
+    local conf_file="$3"
+    local port="$4"
+    local cert_choice="$5"
+    local ssl_dir="$6"
+
+    echo
+    echo "====== 网站信息 ======"
+    echo "域名: $domain"
+    echo "网站根目录: $site_root"
+    echo "Nginx 配置文件: $conf_file"
+    if [[ "$port" == "443" ]]; then
+        if [[ "$cert_choice" == 1 ]]; then
+            echo "证书类型: 自签"
+            echo "证书文件: $ssl_dir/$domain.crt"
+            echo "私钥文件: $ssl_dir/$domain.key"
+        else
+            echo "证书类型: Let’s Encrypt"
+            echo "证书文件: /etc/letsencrypt/live/$domain/fullchain.pem"
+            echo "私钥文件: /etc/letsencrypt/live/$domain/privkey.pem"
+        fi
+    fi
+    echo "====================="
+}
+
 # 添加单个网站
 add_site() {
     read -p "请输入网站域名: " domain
@@ -162,7 +190,7 @@ EOL
 
     nginx -t && systemctl reload nginx
     open_firewall_ports
-    echo "网站 $domain 已添加"
+    show_site_info "$domain" "$site_root" "$conf_file" "$port" "$cert_choice" "$SSL_DIR"
 }
 
 # 批量添加网站
@@ -240,7 +268,7 @@ EOL
         fi
 
         nginx -t && systemctl reload nginx
-        echo "网站 $domain 添加完成"
+        show_site_info "$domain" "$site_root" "$conf_file" "$port" "$cert_choice" "$SSL_DIR"
     done
 
     open_firewall_ports
