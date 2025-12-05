@@ -1,5 +1,5 @@
 # 文件/目录结构
-
+```
 /var/www/                    <-- 网站根目录
  ├── example.com/             <-- example.com 网站目录
  │   └── index.html           <-- 首页 HTML
@@ -8,19 +8,19 @@
  ├── example.com.conf
  /etc/nginx/sites-enabled/     <-- 已启用配置（符号链接）
  ├── example.com.conf -> ../sites-available/example.com.conf
-
+```
 # 自签证书
-
+```
 /etc/ssl/example.com/
  ├── example.com.crt           <-- 证书
  └── example.com.key           <-- 私钥
-
+```
 # Let’s Encrypt
-
+```
 /etc/letsencrypt/live/example.com/
  ├── fullchain.pem
  └── privkey.pem
-
+```
 ### 1.安装
 
 ```
