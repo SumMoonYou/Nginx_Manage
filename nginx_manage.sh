@@ -2,7 +2,7 @@
 
 # ==========================
 # Nginx 一键管理脚本
-# Version: 1.9
+# Version: 2.0
 # 功能: 安装/单站/批量添加/删除/卸载/自动续期/防火墙放行/开机自启/输出网站信息/80+443监听
 # 支持: Debian/Ubuntu, CentOS/RHEL/AlmaLinux/RockyLinux, Fedora
 # ==========================
@@ -297,7 +297,7 @@ EOL
 }
 
 # 主菜单
-echo "====== Nginx 一键管理 v1.9 ======"
+echo "====== Nginx 一键管理 v2.0 ======"
 echo "1) 安装 Nginx"
 echo "2) 添加单个网站"
 echo "3) 批量添加网站"
