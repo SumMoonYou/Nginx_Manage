@@ -169,7 +169,7 @@ add_site() {
     fi
 
     mkdir -p "$site_root"
-    echo "<h1>欢迎访问 $domain</h1>" > "$site_root/index.html"
+    echo "<h1>Welcome $domain</h1>" > "$site_root/index.html"
 
     echo "请选择监听端口: "
     echo "1) 80"
