@@ -1,4 +1,5 @@
 #!/bin/bash
+
 # ==========================
 # Nginx 一键管理脚本
 # Version: 1.9
@@ -16,14 +17,12 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# 检测系统类型及版本
+# 检测系统类型
 detect_os() {
     if [[ -f /etc/debian_version ]]; then
         OS_TYPE="debian"
-        DEBIAN_VERSION=$(lsb_release -r | awk '{print $2}')
     elif [[ -f /etc/redhat-release ]]; then
         OS_TYPE="redhat"
-        REDHAT_VERSION=$(rpm -E %{rhel})
     elif [[ $(command -v dnf) ]]; then
         OS_TYPE="fedora"
     else
@@ -61,40 +60,64 @@ install_nginx() {
     detect_os
     if ! command -v nginx &>/dev/null; then
         echo "正在安装 Nginx..."
+
         case "$OS_TYPE" in
-            debian)
-                if [[ "$DEBIAN_VERSION" < "9" ]]; then
-                    # 低版本 Debian 安装源
-                    apt update
-                    apt install -y nginx openssl certbot python-certbot-nginx
-                else
-                    apt update
-                    apt install -y nginx openssl certbot python3-certbot-nginx
-                fi
+            debian|ubuntu)
+                # 添加官方 Nginx 仓库并安装稳定版
+                echo "deb http://nginx.org/packages/ubuntu/ $(lsb_release -cs) nginx" > /etc/apt/sources.list.d/nginx.list
+                curl -fsSL https://nginx.org/keys/nginx_signing.key | tee /etc/apt/trusted.gpg.d/nginx.asc
+                apt update
+                apt install -y nginx openssl certbot python3-certbot-nginx
                 ;;
-            redhat)
-                if [[ "$REDHAT_VERSION" -eq 7 ]]; then
-                    # CentOS 7 系统兼容
-                    yum install -y epel-release
-                    yum install -y nginx openssl certbot python2-certbot-nginx
-                else
-                    yum install -y nginx openssl certbot python3-certbot-nginx
-                fi
+
+            redhat|centos|almalinux|rockylinux)
+                # 安装官方 Nginx 仓库
+                cat > /etc/yum.repos.d/nginx.repo <<EOL
+[nginx-stable]
+name=nginx stable repo
+baseurl=http://nginx.org/packages/centos/7/$basearch/
+gpgcheck=1
+enabled=1
+gpgkey=https://nginx.org/keys/nginx_signing.key
+EOL
+                yum install -y nginx openssl certbot python3-certbot-nginx
                 ;;
+
             fedora)
+                # 使用 DNF 安装 Nginx 官方稳定版
                 dnf install -y nginx openssl certbot python3-certbot-nginx
                 ;;
         esac
+
         echo "Nginx 安装完成"
     else
         echo "Nginx 已安装"
     fi
 
+    # 启动并设置 Nginx 开机自启
     systemctl enable nginx
     systemctl start nginx
 
     mkdir -p "$NGINX_CONF_DIR" "$NGINX_CONF_ENABLED"
     open_firewall_ports
+
+    # 显示 Nginx 常用命令
+    show_nginx_commands
+}
+
+# 安装完成后显示 Nginx 常用命令
+show_nginx_commands() {
+    echo "Nginx 常用命令："
+    echo "------------------"
+    echo "启动 Nginx: systemctl start nginx"
+    echo "停止 Nginx: systemctl stop nginx"
+    echo "重启 Nginx: systemctl restart nginx"
+    echo "重新加载 Nginx 配置: systemctl reload nginx"
+    echo "检查 Nginx 配置是否正确: nginx -t"
+    echo "查看 Nginx 状态: systemctl status nginx"
+    echo "列出所有 Nginx 服务进程: ps aux | grep nginx"
+    echo "查看 Nginx 错误日志: tail -f /var/log/nginx/error.log"
+    echo "查看 Nginx 访问日志: tail -f /var/log/nginx/access.log"
 }
 
 # 设置 Certbot 自动续期
@@ -212,6 +235,7 @@ EOL
             certbot --nginx -d "$domain" --non-interactive --agree-tos -m admin@$domain
             cert_choice=2
         fi
+
     elif [[ "$port" == "80+443" ]]; then
         echo "请选择证书类型:"
         echo "1) 自签证书"
