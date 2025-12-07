@@ -7,6 +7,23 @@
 # 支持: Debian/Ubuntu, CentOS/RHEL/AlmaLinux/RockyLinux, Fedora
 # ==========================
 
+# 脚本版本号
+SCRIPT_VERSION="1.9"
+SCRIPT_CHANGELOG="修复了多版本系统支持，增加了自动检测并选择安装源功能"
+
+# 显示版本号和变更记录
+show_version() {
+    echo "Nginx 一键管理脚本 - 版本 $SCRIPT_VERSION"
+    echo "变更记录: $SCRIPT_CHANGELOG"
+}
+
+# 显示版本号
+show_version
+
+# ==========================
+# 全部操作都在以下内容中进行
+
+# Nginx 配置目录
 NGINX_CONF_DIR="/etc/nginx/sites-available"
 NGINX_CONF_ENABLED="/etc/nginx/sites-enabled"
 WEB_ROOT="/var/www"
@@ -17,30 +34,160 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# 检测系统类型
-detect_os() {
+# 检测操作系统和版本
+detect_os_version() {
     if [[ -f /etc/debian_version ]]; then
         OS_TYPE="debian"
+        OS_VERSION=$(cat /etc/debian_version)
+        if [[ "$OS_VERSION" == 8* ]]; then
+            OS_DISTRO="debian8"
+        elif [[ "$OS_VERSION" == 9* ]]; then
+            OS_DISTRO="debian9"
+        elif [[ "$OS_VERSION" == 10* ]]; then
+            OS_DISTRO="debian10"
+        elif [[ "$OS_VERSION" == 11* ]]; then
+            OS_DISTRO="debian11"
+        fi
+    elif [[ -f /etc/lsb-release ]]; then
+        OS_TYPE="ubuntu"
+        OS_VERSION=$(lsb_release -r | awk '{print $2}')
+        if [[ "$OS_VERSION" == "16.04" ]]; then
+            OS_DISTRO="ubuntu16"
+        elif [[ "$OS_VERSION" == "18.04" ]]; then
+            OS_DISTRO="ubuntu18"
+        elif [[ "$OS_VERSION" == "20.04" ]]; then
+            OS_DISTRO="ubuntu20"
+        elif [[ "$OS_VERSION" == "22.04" ]]; then
+            OS_DISTRO="ubuntu22"
+        fi
     elif [[ -f /etc/redhat-release ]]; then
         OS_TYPE="redhat"
-    elif [[ $(command -v dnf) ]]; then
-        OS_TYPE="fedora"
+        OS_VERSION=$(rpm -E %rhel)
+        if [[ "$OS_VERSION" == "7" ]]; then
+            OS_DISTRO="centos7"
+        elif [[ "$OS_VERSION" == "8" ]]; then
+            OS_DISTRO="centos8"
+        fi
     else
         echo "不支持的操作系统"
         exit 1
     fi
 }
 
+# 安装 Nginx
+install_nginx() {
+    detect_os_version
+    if ! command -v nginx &>/dev/null; then
+        echo "正在安装 Nginx..."
+
+        case "$OS_TYPE" in
+            debian)
+                case "$OS_DISTRO" in
+                    debian8|debian9)
+                        apt-get update
+                        apt-get install -y nginx
+                        ;;
+                    debian10|debian11)
+                        apt update
+                        apt install -y nginx
+                        ;;
+                esac
+                ;;
+            ubuntu)
+                case "$OS_DISTRO" in
+                    ubuntu16|ubuntu18)
+                        apt-get update
+                        apt-get install -y nginx
+                        ;;
+                    ubuntu20|ubuntu22)
+                        apt update
+                        apt install -y nginx
+                        ;;
+                esac
+                ;;
+            centos7)
+                yum install -y epel-release
+                cat > /etc/yum.repos.d/nginx.repo << EOL
+[nginx]
+name=nginx repo
+baseurl=http://nginx.org/packages/centos/7/\$basearch/
+gpgcheck=0
+enabled=1
+EOL
+                yum install -y nginx
+                ;;
+            centos8)
+                dnf install -y nginx
+                ;;
+        esac
+
+        echo "Nginx 安装完成"
+    else
+        echo "Nginx 已安装"
+    fi
+
+    systemctl enable nginx
+    systemctl start nginx
+    open_firewall_ports
+}
+
+# 安装 Certbot
+install_certbot() {
+    detect_os_version
+    if ! command -v certbot &>/dev/null; then
+        echo "正在安装 Certbot..."
+
+        case "$OS_TYPE" in
+            debian)
+                case "$OS_DISTRO" in
+                    debian8|debian9)
+                        curl https://dl.eff.org/certbot-auto -o /usr/local/bin/certbot-auto
+                        chmod +x /usr/local/bin/certbot-auto
+                        /usr/local/bin/certbot-auto --install-only
+                        ;;
+                    debian10|debian11)
+                        apt update
+                        apt install -y certbot python3-certbot-nginx
+                        ;;
+                esac
+                ;;
+            ubuntu)
+                case "$OS_DISTRO" in
+                    ubuntu16|ubuntu18)
+                        curl https://dl.eff.org/certbot-auto -o /usr/local/bin/certbot-auto
+                        chmod +x /usr/local/bin/certbot-auto
+                        /usr/local/bin/certbot-auto --install-only
+                        ;;
+                    ubuntu20|ubuntu22)
+                        apt update
+                        apt install -y certbot python3-certbot-nginx
+                        ;;
+                esac
+                ;;
+            centos7)
+                curl https://dl.eff.org/certbot-auto -o /usr/local/bin/certbot-auto
+                chmod +x /usr/local/bin/certbot-auto
+                /usr/local/bin/certbot-auto --install-only
+                ;;
+            centos8)
+                dnf install -y certbot python3-certbot-nginx
+                ;;
+        esac
+
+        echo "Certbot 安装完成"
+    else
+        echo "Certbot 已安装"
+    fi
+}
+
 # 开放防火墙端口
 open_firewall_ports() {
-    detect_os
-    if [[ "$OS_TYPE" == "debian" ]]; then
-        if command -v ufw &>/dev/null; then
-            ufw allow 80
-            ufw allow 443
-            ufw reload
-        fi
-    else
+    detect_os_version
+    if [[ "$OS_TYPE" == "debian" || "$OS_TYPE" == "ubuntu" ]]; then
+        ufw allow 80
+        ufw allow 443
+        ufw reload
+    elif [[ "$OS_TYPE" == "redhat" ]]; then
         if systemctl is-active --quiet firewalld; then
             firewall-cmd --permanent --add-service=http
             firewall-cmd --permanent --add-service=https
@@ -52,46 +199,6 @@ open_firewall_ports() {
                 service iptables save
             fi
         fi
-    fi
-}
-
-# 安装 Nginx 与 Certbot
-install_nginx() {
-    detect_os
-    if ! command -v nginx &>/dev/null; then
-        echo "正在安装 Nginx..."
-        case "$OS_TYPE" in
-            debian)
-                apt update
-                apt install -y nginx openssl certbot python3-certbot-nginx
-                ;;
-            redhat)
-                yum install -y epel-release
-                yum install -y nginx openssl certbot python3-certbot-nginx
-                ;;
-            fedora)
-                dnf install -y nginx openssl certbot python3-certbot-nginx
-                ;;
-        esac
-        echo "Nginx 安装完成"
-    else
-        echo "Nginx 已安装"
-    fi
-
-    systemctl enable nginx
-    systemctl start nginx
-
-    mkdir -p "$NGINX_CONF_DIR" "$NGINX_CONF_ENABLED"
-    open_firewall_ports
-}
-
-# 设置 Certbot 自动续期
-setup_cert_renewal() {
-    if command -v certbot &>/dev/null; then
-        echo "设置 Certbot 自动续期任务..."
-        cron_job="0 2 * * * certbot renew --quiet --post-hook 'systemctl reload nginx'"
-        crontab -l 2>/dev/null | grep -F "$cron_job" >/dev/null || (crontab -l 2>/dev/null; echo "$cron_job") | crontab -
-        echo "自动续期任务已设置，每天 2:00 检查证书并重载 Nginx"
     fi
 }
 
@@ -123,260 +230,16 @@ show_site_info() {
     echo "====================="
 }
 
-# 添加单个网站
-add_site() {
-    read -p "请输入网站域名: " domain
-    site_root="$WEB_ROOT/$domain"
-
-    if [[ -d "$site_root" ]]; then
-        echo "网站目录已存在: $site_root"
-        return
-    fi
-
-    mkdir -p "$site_root"
-    echo "<h1>欢迎访问 $domain</h1>" > "$site_root/index.html"
-
-    echo "请选择监听端口: "
-    echo "1) 80"
-    echo "2) 443"
-    echo "3) 80+443"
-    read -p "请输入选项 [1-3]: " port_choice
-
-    case "$port_choice" in
-        1) port=80 ;;
-        2) port=443 ;;
-        3) port="80+443" ;;
-        *) echo "无效选项"; return ;;
-    esac
-
-    conf_file="$NGINX_CONF_DIR/$domain.conf"
-    SSL_DIR="/etc/ssl/$domain"
-    mkdir -p "$SSL_DIR"
-
-    # 生成 Nginx 配置
-    if [[ "$port" == "80" ]]; then
-        cat > "$conf_file" <<EOL
-server {
-    listen 80;
-    server_name $domain;
-
-    root $site_root;
-    index index.html;
-
-    location / {
-        try_files \$uri \$uri/ =404;
-    }
-}
-EOL
-
-    elif [[ "$port" == "443" ]]; then
-        echo "请选择证书类型:"
-        echo "1) 自签证书"
-        echo "2) Let’s Encrypt 自动申请"
-        read -p "请输入选项 [1-2]: " cert_choice
-
-        if [[ "$cert_choice" == 1 ]]; then
-            openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-                -keyout "$SSL_DIR/$domain.key" \
-                -out "$SSL_DIR/$domain.crt" \
-                -subj "/CN=$domain"
-            cat > "$conf_file" <<EOL
-server {
-    listen 443 ssl;
-    server_name $domain;
-
-    root $site_root;
-    index index.html;
-
-    ssl_certificate $SSL_DIR/$domain.crt;
-    ssl_certificate_key $SSL_DIR/$domain.key;
-
-    location / {
-        try_files \$uri \$uri/ =404;
-    }
-}
-EOL
-        else
-            certbot --nginx -d "$domain" --non-interactive --agree-tos -m admin@$domain
-            cert_choice=2
-        fi
-
-    elif [[ "$port" == "80+443" ]]; then
-        echo "请选择证书类型:"
-        echo "1) 自签证书"
-        echo "2) Let’s Encrypt 自动申请"
-        read -p "请输入选项 [1-2]: " cert_choice
-
-        # HTTP server 块
-        cat > "$conf_file" <<EOL
-server {
-    listen 80;
-    server_name $domain;
-
-    root $site_root;
-    index index.html;
-
-    location / {
-        try_files \$uri \$uri/ =404;
-    }
-}
-EOL
-
-        # HTTPS server 块
-        if [[ "$cert_choice" == 1 ]]; then
-            openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-                -keyout "$SSL_DIR/$domain.key" \
-                -out "$SSL_DIR/$domain.crt" \
-                -subj "/CN=$domain"
-            cat >> "$conf_file" <<EOL
-server {
-    listen 443 ssl;
-    server_name $domain;
-
-    root $site_root;
-    index index.html;
-
-    ssl_certificate $SSL_DIR/$domain.crt;
-    ssl_certificate_key $SSL_DIR/$domain.key;
-
-    location / {
-        try_files \$uri \$uri/ =404;
-    }
-}
-EOL
-        else
-            certbot --nginx -d "$domain" --non-interactive --agree-tos -m admin@$domain
-            cert_choice=2
-        fi
-    fi
-
-    ln -s "$conf_file" "$NGINX_CONF_ENABLED/$domain.conf" 2>/dev/null || true
-    nginx -t && systemctl reload nginx
-    open_firewall_ports
-    show_site_info "$domain" "$site_root" "$conf_file" "$port" "$cert_choice" "$SSL_DIR"
-
-    # 自动续期
-    if [[ "$port" == "443" || "$port" == "80+443" ]] && [[ "$cert_choice" == 2 ]]; then
-        setup_cert_renewal
-    fi
-}
-
-# 批量添加网站（同理，可在循环里加 80+443 支持）
-add_sites_batch() {
-    echo "请输入多个域名，用空格分隔（例如: example.com test.com）:"
-    read -a domains
-    if [[ ${#domains[@]} -eq 0 ]]; then
-        echo "未输入任何域名"
-        return
-    fi
-
-    echo "请选择监听端口: "
-    echo "1) 80"
-    echo "2) 443"
-    echo "3) 80+443"
-    read -p "请输入选项 [1-3]: " port_choice
-
-    if [[ "$port_choice" == "1" ]]; then port=80
-    elif [[ "$port_choice" == "2" ]]; then port=443
-    elif [[ "$port_choice" == "3" ]]; then port="80+443"
-    else echo "无效选项"; return; fi
-
-    if [[ "$port" == "443" || "$port" == "80+443" ]]; then
-        echo "请选择证书类型:"
-        echo "1) 自签证书"
-        echo "2) Let’s Encrypt 自动申请"
-        read -p "请输入选项 [1-2]: " cert_choice
-    fi
-
-    for domain in "${domains[@]}"; do
-        echo "正在添加网站: $domain"
-        site_root="$WEB_ROOT/$domain"
-
-        if [[ -d "$site_root" ]]; then
-            echo "网站目录已存在: $site_root，跳过"
-            continue
-        fi
-
-        mkdir -p "$site_root"
-        echo "<h1>欢迎访问 $domain</h1>" > "$site_root/index.html"
-
-        conf_file="$NGINX_CONF_DIR/$domain.conf"
-        SSL_DIR="/etc/ssl/$domain"
-        mkdir -p "$SSL_DIR"
-
-        # 调用单站逻辑生成配置
-        add_site "$domain"
-    done
-}
-
-# 删除网站
-delete_site() {
-    read -p "请输入要删除的网站域名: " domain
-    site_root="$WEB_ROOT/$domain"
-    conf_file="$NGINX_CONF_DIR/$domain.conf"
-    SSL_DIR="/etc/ssl/$domain"
-
-    [[ -f "$conf_file" ]] && rm -f "$conf_file" "$NGINX_CONF_ENABLED/$domain.conf"
-    [[ -d "$site_root" ]] && rm -rf "$site_root"
-    [[ -d "$SSL_DIR" ]] && rm -rf "$SSL_DIR"
-
-    if command -v certbot &>/dev/null; then
-        certbot delete --cert-name "$domain" --non-interactive
-    fi
-
-    nginx -t && systemctl reload nginx
-    echo "网站 $domain 已删除"
-}
-
-# 卸载 Nginx
-uninstall_nginx() {
-    read -p "确定要卸载 Nginx 并删除所有网站和配置吗？[y/N]: " confirm
-    [[ "$confirm" != "y" && "$confirm" != "Y" ]] && echo "取消卸载" && return
-
-    systemctl stop nginx
-    systemctl disable nginx
-
-    detect_os
-    case "$OS_TYPE" in
-        debian)
-            apt remove -y nginx nginx-common nginx-full
-            apt autoremove -y
-            ;;
-        redhat)
-            yum remove -y nginx
-            ;;
-        fedora)
-            dnf remove -y nginx
-            ;;
-    esac
-
-    [[ -d "$WEB_ROOT" ]] && rm -rf "$WEB_ROOT"
-    [[ -d "/etc/nginx" ]] && rm -rf "/etc/nginx"
-
-    if command -v certbot &>/dev/null; then
-        rm -rf /etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt
-    fi
-
-    crontab -l 2>/dev/null | grep -v "certbot renew" | crontab -
-    echo "Nginx 已卸载完成"
-}
-
 # 主菜单
-echo "====== Nginx 一键管理 v1.9 ======"
+echo "====== Nginx 一键管理 v$SCRIPT_VERSION ======"
 echo "1) 安装 Nginx"
-echo "2) 添加单个网站"
-echo "3) 批量添加网站"
-echo "4) 删除网站"
-echo "5) 卸载 Nginx"
-echo "6) 退出"
-read -p "请选择操作 [1-6]: " choice
+echo "2) 安装 Certbot"
+echo "3) 退出"
+read -p "请选择操作 [1-3]: " choice
 
 case "$choice" in
-    1) install_nginx; setup_cert_renewal ;;
-    2) add_site ;;
-    3) add_sites_batch ;;
-    4) delete_site ;;
-    5) uninstall_nginx ;;
-    6) exit 0 ;;
+    1) install_nginx ;;
+    2) install_certbot ;;
+    3) exit 0 ;;
     *) echo "无效选择"; exit 1 ;;
 esac
