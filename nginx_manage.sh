@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # =============================================================
-#  NGINX TURBO MANAGER v5.0 - SSL CONTENT PASTE SUPPORT
+#  NGINX TURBO MANAGER v5.1 - AUTO PORT OPENING
 # =============================================================
 
 export LANG=en_US.UTF-8
@@ -12,10 +12,35 @@ CERT_DIR="/etc/nginx/ssl_self"
 
 [[ $EUID -ne 0 ]] && echo "[ERROR] 请使用 root 权限运行！" && exit 1
 
+# ----------------- 自动放行端口 -----------------
+open_ports() {
+    echo ">> 正在检查并放行 80/443 端口..."
+    
+    # 1. 如果是 UFW (Ubuntu/Debian)
+    if command -v ufw &>/dev/null && ufw status | grep -q "active"; then
+        ufw allow 80/tcp >/dev/null
+        ufw allow 443/tcp >/dev/null
+        echo "   [UFW] 端口已放行"
+    
+    # 2. 如果是 FirewallD (CentOS/RHEL)
+    elif command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld; then
+        firewall-cmd --permanent --add-service=http >/dev/null 2>&1
+        firewall-cmd --permanent --add-service=https >/dev/null 2>&1
+        firewall-cmd --reload >/dev/null
+        echo "   [FirewallD] 端口已放行"
+    
+    # 3. 如果是 iptables (通用)
+    else
+        iptables -I INPUT -p tcp --dport 80 -j ACCEPT
+        iptables -I INPUT -p tcp --dport 443 -j ACCEPT
+        echo "   [iptables] 规则已添加"
+    fi
+}
+
 draw_header() {
     clear
     echo "==============================================================="
-    echo "                   NGINX 管理工具 v5.0                         "
+    echo "                   NGINX 管理工具 v5.1                         "
     echo "==============================================================="
     echo "  状态: $(pgrep nginx >/dev/null && echo "运行中" || echo "未启动")"
     echo "---------------------------------------------------------------"
@@ -30,12 +55,14 @@ init_system() {
         PKG_MGR="yum"; DEFAULT_USER="nginx"
         yum install -y epel-release nginx certbot python3-certbot-nginx openssl
     fi
-    # 彻底清理 acme.sh 冲突
+    
+    # 清理 acme.sh 冲突
     crontab -l 2>/dev/null | grep "acme.sh" && crontab -l | grep -v "acme.sh" | crontab - && echo ">> 已清理 acme 冲突"
+    
+    open_ports
     
     mkdir -p "$NGINX_CONF_DIR" "$NGINX_CONF_ENABLED" "$WEB_ROOT" "$CERT_DIR"
     
-    # 官方标准配置
     cat > /etc/nginx/nginx.conf <<EOF
 user $DEFAULT_USER;
 worker_processes auto;
@@ -64,7 +91,7 @@ add_site() {
     conf_file="$NGINX_CONF_DIR/$domain.conf"
     sc="$CERT_DIR/$domain"
     mkdir -p "$site_path" "$sc"
-    echo "<html><body style='text-align:center;'><h1>$domain</h1><p>Nginx Manager v5.0</p></body></html>" > "$site_path/index.html"
+    echo "<html><body style='text-align:center;'><h1>$domain</h1><p>Nginx Manager v5.1</p></body></html>" > "$site_path/index.html"
 
     echo -e "\n请选择 SSL 证书来源:"
     echo "1. 自动申请 (Let's Encrypt)"
@@ -74,7 +101,6 @@ add_site() {
 
     case $ssl_choice in
         1)
-            # 占位证书以通过 nginx -t
             openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout "$sc/k.pem" -out "$sc/c.pem" -subj "/CN=$domain"
             final_c="$sc/c.pem"; final_k="$sc/k.pem"; do_certbot="y"
             ;;
@@ -83,15 +109,7 @@ add_site() {
             cat > "$sc/local_cert.pem"
             echo "--- 请粘贴 私钥 (KEY) 内容，按 Ctrl+D 结束 ---"
             cat > "$sc/local_key.pem"
-            
-            if [[ -s "$sc/local_cert.pem" && -s "$sc/local_key.pem" ]]; then
-                final_c="$sc/local_cert.pem"; final_k="$sc/local_key.pem"
-                echo ">> 证书内容已保存。"
-            else
-                echo "[错误] 内容为空，降级为自签证书。"
-                openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout "$sc/k.pem" -out "$sc/c.pem" -subj "/CN=$domain"
-                final_c="$sc/c.pem"; final_k="$sc/k.pem"
-            fi
+            final_c="$sc/local_cert.pem"; final_k="$sc/local_key.pem"
             ;;
         *)
             openssl req -x509 -nodes -days 3650 -newkey rsa:2048 -keyout "$sc/k.pem" -out "$sc/c.pem" -subj "/CN=$domain"
@@ -125,9 +143,10 @@ EOF
             certbot --nginx -d "$domain" -m "$mail" --agree-tos --non-interactive
             systemctl reload nginx
         fi
+        open_ports
         echo -e "\n[配置摘要]\n目录: $site_path\n配置: $conf_file\n证书: $sc\n"
     else
-        echo "[ERROR] Nginx 配置校验失败，请检查粘贴的内容是否完整！"
+        echo "[ERROR] Nginx 配置校验失败！"
         rm -f "$NGINX_CONF_ENABLED/$domain.conf"
     fi
 }
